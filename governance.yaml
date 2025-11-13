@@ -1,0 +1,696 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: This is a cloudformation stack for a serverless multi region AWS governance system
+
+Parameters:
+  ArtifactBucketName:
+    Type: String
+    Description: The name of the S3 bucket where Lambda artifacts are stored.
+  
+
+Resources:
+  GovernanceSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: GovernanceAlerts
+      DisplayName: "Governance and Cost Optimization Alerts"
+
+  GovernanceSNSTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref GovernanceSNSTopic
+      Protocol: email
+      Endpoint: <YOUR EMAIL ADDRESS> #REPLACE HERE
+
+  GovernanceAuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GovernanceAuditLogs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: resource_identifier
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ResourceIdIndex
+          KeySchema:
+            - AttributeName: resource_identifier
+              KeyType: HASH
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes: 
+              - action           
+              - resource_type
+              - resource_name
+
+  GovernanceLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GovernanceLocks
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: resource_identifier
+          AttributeType: S
+      KeySchema:
+        - AttributeName: resource_identifier
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+            
+  DiscoveryLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DiscoveryLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DiscoveryPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ComplianceDiscoveryFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt GovernanceSnoozeTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceAuditTable.Arn
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
+                  - rds:DescribeDBInstances
+                  - rds:ListTagsForResource
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketAcl
+                  - s3:GetBucketPolicy
+                  - iam:ListUsers
+                  - iam:ListMFADevices
+                Resource: "*"
+
+  ComplianceDiscoveryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ComplianceDiscoveryFunction
+      Handler: discovery.lambda_handler
+      Role: !GetAtt DiscoveryLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          DYNAMO_TABLE_NAME: !Ref GovernanceAuditTable
+          SNS_TOPIC_ARN: !Ref GovernanceSNSTopic
+          SNOOZE_TABLE_NAME: !Ref GovernanceSnoozeTable
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/discovery.zip'
+
+  MetricCheckLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MetricCheckLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MetricCheckPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MetricCheckerFunction:*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                Resource: "*"
+
+  ComplianceMetricCheckerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: MetricCheckerFunction
+      Handler: metric_checker.lambda_handler
+      Role: !GetAtt MetricCheckLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          # --- TEST CONFIGURATION (5 MINUTES) ---
+          CHECK_PERIOD_UNIT: MINUTES   # Set to MINUTES for testing
+          CHECK_PERIOD_VALUE: 5        # Set to 5 minutes
+          # --- IDLE THRESHOLDS (Aggressive for Testing) ---
+          EC2_IDLE_PERCENT: 5.0
+          RDS_IDLE_CONNECTIONS: 0.0
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/metric_checker.zip'
+
+  CheckStatusLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CheckStatusLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CheckStatusPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/CheckStatusFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceLockTable.Arn
+
+  CheckStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CheckStatusFunction
+      Handler: checkstatus.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt CheckStatusLambdaRole.Arn
+      Environment:
+        Variables:
+          LOCK_TABLE_NAME: !Ref GovernanceLockTable
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/checkstatus.zip'
+
+  NotifierFunctionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: NotifierFunctionLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: NotifierCustomPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/NotifierFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceAuditTable.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:BotUserOAuthToken-*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  NotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: NotifierFunction
+      Handler: notifier.lambda_handler
+      Role: !GetAtt NotifierFunctionLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 60
+      Environment:
+        Variables:
+          DYNAMO_TABLE_NAME: !Ref GovernanceAuditTable
+          BOT_TOKEN_NAME: BotUserOAuthToken 
+          SLACK_CHANNEL_ID: <YOUR CHANNEL ID> #REPLACE HERE
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/notifier.zip'
+
+  RecheckLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: RecheckLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RecheckPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ComplianceRecheckFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt GovernanceSnoozeTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceAuditTable.Arn
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
+                  - rds:DescribeDBInstances
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketAcl
+                  - s3:GetBucketPolicy
+                  - iam:ListMFADevices
+                Resource: "*"
+          
+  ComplianceRecheckFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ComplianceRecheckFunction
+      Handler: recheck.lambda_handler
+      Role: !GetAtt RecheckLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      Environment:
+        Variables:
+          DYNAMO_TABLE_NAME: !Ref GovernanceAuditTable
+          SNOOZE_TABLE_NAME: !Ref GovernanceSnoozeTable
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/recheck.zip'
+
+  GovernanceRemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GovernanceRemediationRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RemediationPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/RemediationFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceAuditTable.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref GovernanceSNSTopic
+              - Effect: Allow
+                Action:
+                  - ec2:StopInstances
+                  - ec2:ReleaseAddress
+                  - rds:DeleteDBInstance
+                  - s3:PutBucketPublicAccessBlock
+                  - iam:TagUser
+                Resource: "*"
+      Path: "/"
+          
+  RemediationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: RemediationFunction
+      Handler: remediation.lambda_handler
+      Role: !GetAtt GovernanceRemediationRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Environment:
+        Variables:
+          DYNAMO_TABLE_NAME: !Ref GovernanceAuditTable
+          SNS_TOPIC_ARN: !Ref GovernanceSNSTopic
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/remediation.zip'
+          
+  GovernanceStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GovernanceStateMachineRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ComplianceDiscoveryFunction.Arn
+                  - !GetAtt ComplianceMetricCheckerFunction.Arn
+                  - !GetAtt CheckStatusFunction.Arn
+                  - !GetAtt NotifierFunction.Arn
+                  - !GetAtt ComplianceRecheckFunction.Arn
+                  - !GetAtt RemediationFunction.Arn
+
+  GovernanceStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: GovernanceOrchestrator
+      RoleArn: !GetAtt GovernanceStateMachineRole.Arn
+      Definition:
+        Comment: "Governance orchestrator"
+        StartAt: "CheckCompliance"
+        States:
+          CheckCompliance:
+            Type: "Task"
+            Resource: !GetAtt ComplianceDiscoveryFunction.Arn
+            ResultPath: "$" 
+            Next: "MetricCheck"
+            Retry:
+              - ErrorEquals:
+                  - "States.ALL"
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+          
+          MetricCheck:
+            Type: "Task"
+            Resource: !GetAtt ComplianceMetricCheckerFunction.Arn
+            ResultPath: "$" 
+            Next: "CheckStatus"
+            Retry:
+              - ErrorEquals:
+                  - "States.ALL"
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+
+          CheckStatus:
+            Type: "Task"
+            Resource: !GetAtt CheckStatusFunction.Arn
+            InputPath: "$" 
+            ResultPath: "$.status_check_result" 
+            Next: "HasViolation"
+
+          HasViolation:
+            Type: "Choice"
+            Choices:
+              - Variable: "$.status_check_result.new_violation_count"
+                NumericGreaterThan: 0
+                Next: "Notify"
+            Default: "SucceedState"
+
+          Notify:
+            Type: "Task"
+            Resource: !GetAtt NotifierFunction.Arn
+            Parameters:
+              "execution_id.$": "$.execution_id"
+              "violations.$": "$.status_check_result.new_violations"
+            ResultPath: "$.notify_result"
+            Next: "WaitForGrace"
+
+          WaitForGrace:
+            Type: "Wait"
+            Seconds: 180 # Set to 3 minutes for testing
+            Next: "Recheck"
+
+          Recheck:
+            Type: "Task"
+            Resource: !GetAtt ComplianceRecheckFunction.Arn
+            Parameters:
+              "violations.$": "$.status_check_result.new_violations"
+            ResultPath: "$.recheck_result"
+            Next: "TerminateChoice"
+
+          TerminateChoice:
+            Type: "Choice"
+            Choices:
+              - Variable: "$.recheck_result.has_non_compliant"
+                BooleanEquals: true
+                Next: "Remediate"
+            Default: "SucceedState"
+
+          Remediate:
+            Type: "Task"
+            Resource: !GetAtt RemediationFunction.Arn
+            Parameters:
+              "recheck_results.$": "$.recheck_result.recheck_results"
+            End: true
+
+          SucceedState:
+            Type: "Succeed"
+
+  EventBridgeInvokeStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EventBridgeInvokeStateMachineRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com     
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStepFunctionExecution
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !GetAtt GovernanceStateMachine.Arn
+
+  GovernanceEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: GovernanceAutomationSchedule
+      Description: Trigger Governance State Machine daily
+      ScheduleExpression: cron(0 15 * * ? *) 
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt GovernanceStateMachine.Arn
+          Id: GovernanceStateMachineTarget
+          RoleArn: !GetAtt EventBridgeInvokeStateMachineRole.Arn
+
+  GovernanceChatbotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GovernanceChatbotRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: chatbot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+      - PolicyName: ChatbotSNSAccessPolicy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - sns:ListTopics
+                - sns:GetTopicAttributes
+                - sns:Subscribe
+                - sns:Publish
+              Resource: !Ref GovernanceSNSTopic
+
+  ChatbotSlackConfiguration:
+    Type: AWS::Chatbot::SlackChannelConfiguration
+    Properties:
+      ConfigurationName: cloud-janitor
+      IamRoleArn: !GetAtt GovernanceChatbotRole.Arn
+      LoggingLevel: INFO
+      SlackChannelId: <YOUR CHANNEL ID> #REPLACE HERE
+      SlackWorkspaceId: <YOURWORKPLACE ID> #REPLACE HERE
+      SnsTopicArns: 
+        - !Ref GovernanceSNSTopic
+
+  GovernanceSnoozeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GovernanceSnooze
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: resource_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: resource_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: snooze_until
+        Enabled: true
+
+  SnoozeFunctionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GovernanceSnoozeHandlerRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SnoozeHandlerPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/SnoozeHandlerFunction:*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt GovernanceSnoozeTable.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:SlackSigningSecrets-*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:BotUserOAuthToken-*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: "/"
+
+  SnoozeHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SnoozeHandlerFunction
+      Handler: snooze_handler.lambda_handler
+      Role: !GetAtt SnoozeFunctionLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      Environment:
+        Variables:
+          SNOOZE_TABLE_NAME: !Ref GovernanceSnoozeTable
+          BOT_TOKEN_NAME: BotUserOAuthToken 
+          SIGNING_SECRET_NAME: SlackSigningSecrets
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: 'lambda-zips/snooze_handler.zip'
+
+  GovernanceSlackHandlerApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: SlackHandlerApi
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 3600
+
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref GovernanceSlackHandlerApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SnoozeHandlerFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  SlackApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref GovernanceSlackHandlerApi
+      RouteKey: POST /slack/interactivity
+      Target: !Join ['', ['integrations/', !Ref LambdaIntegration]]
+
+  ApiDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - SlackApiRoute
+    Properties:
+      ApiId: !Ref GovernanceSlackHandlerApi
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref GovernanceSlackHandlerApi
+      StageName: $default
+      DeploymentId: !Ref ApiDeployment
+      AutoDeploy: True
+
+  LambdaPermissionForSlackApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SnoozeHandlerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GovernanceSlackHandlerApi}/*'
+    DependsOn:
+      - SnoozeHandlerFunction
+      - GovernanceSlackHandlerApi
+      - ApiStage
+
+Outputs:
+  SlackInteractivityUrl:
+    Description: The URL to configure in the Slack App for Interactivity
+    Value: !Sub 'https://${GovernanceSlackHandlerApi}.execute-api.${AWS::Region}.amazonaws.com/$default/slack/interactivity'
