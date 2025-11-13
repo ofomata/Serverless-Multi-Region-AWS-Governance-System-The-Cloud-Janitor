@@ -1,0 +1,33 @@
+version: 0.2
+
+# DONT FORGET TO DO THIS ----
+# Define environment variables in the CodeBuild project console:
+# ARTIFACT_BUCKET_NAME = "YOUR_ARTIFACT_BUCKET_NAME"
+# AWS_REGION = "us-east-1"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Checking if S3 bucket $ARTIFACT_BUCKET_NAME exists..."
+      # This command checks if the bucket exists. If it doesn't, it creates it.
+      - |
+        aws s3api head-bucket --bucket "$ARTIFACT_BUCKET_NAME" --region "$AWS_REGION" 2>/dev/null || \
+        aws s3 mb "s3://$ARTIFACT_BUCKET_NAME" --region "$AWS_REGION"
+      - echo "Bucket check/creation complete."
+
+  build:
+    commands:
+      - echo "Syncing Lambda zip files to S3..."
+      # This assumes your zips are in a folder named 'lambda-zips' in your repo.
+      - aws s3 sync ./lambda-zips/ "s3://$ARTIFACT_BUCKET_NAME/lambda-zips/"
+
+  post_build:
+    commands:
+      - echo "Build completed on $(date)"
+
+# We pass the main CloudFormation template.
+artifacts:
+  files:
+    - governance.yaml
+  # 'discard-paths: yes' keeps the artifact structure clean
+  discard-paths: yes
