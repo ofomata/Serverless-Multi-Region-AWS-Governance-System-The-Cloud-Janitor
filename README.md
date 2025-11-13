@@ -168,7 +168,7 @@ chat: write and chat:write.public if you are posting to public channels.
 - In the Request URL, paste the invoke URL of your API Gateway endpoint **(e.g., https://<api-id>.execute-api.<region>.amazonaws.com/slack/interactivity)**.
 - Click Save Changes.
 
-**Crucial Note** You need to package the `Lambda's/notifier.py` and `Lambda's/snooze_handler.py` in a folder that has the **slack sdk** installed and zip the dependencies and the python file inside the folder. This is because Slack isn't an AWS service so AWS doesn't manage the dependencies and sdk for slack. Because these two lambda functions would need the slack sdk, it's adviced to manually install and package.
+**Crucial Note** You need to package the `notifier.py` and `snooze_handler.py` in a folder that has the **slack sdk** installed and zip the dependencies and the python file inside the folder. This is because Slack isn't an AWS service so AWS doesn't manage the dependencies and sdk for slack. Because these two lambda functions would need the slack sdk, it's adviced to manually install and package.
 
 **See Below how to Install Slack SDK and Dependencies:**
 
@@ -183,7 +183,7 @@ pip3 install slack_sdk -t .
 #Before you zip make sure your notfier.py is inside this folder too
 zip -r notifier_with_slack_sdk.zip .
 ``` 
-- Do the same for `Lambda's/snooze_handler.py` but the only difference is you need to install **requests dependencies** too so change this to 
+- Do the same for `snooze_handler.py` but the only difference is you need to install **requests dependencies** too so change this to 
 
 ``` bash
 pip3 install requests slack_sdk -t .
