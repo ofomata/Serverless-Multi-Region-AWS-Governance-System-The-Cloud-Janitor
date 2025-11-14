@@ -26,7 +26,7 @@ This system is built on a robust, event-driven serverless stack, primarily orche
 
 **Scale:** The system is composed of **seven distinct Lambda functions** executing the primary governance stages.
 
-![Architecture Diagram](./screenshots/architecture-diagram.jpeg)
+![Architecture Diagram](./images/architecture-diagram.jpeg)
 
 ---
 
@@ -40,10 +40,14 @@ The governance routine is executed by the Step Function across sequential stages
 **Snooze Check:** Crucially checks the **DynamoDB Snooze Table** to bypass any resources already exempted by an owner.
 **Output:** Passes potentially violating resources to the next step.
 
+![CloudWatch Log](./images/discovery-log.png)
+
 2. **Metric Check (Lambda)**
 
 **Function:** Intelligently assesses the usage of discovered resources using **CloudWatch data**.
 **Action:** Runs **CPU Utilization** checks: if an EC2 instance is $\le 5.0\%$ or an RDS instance has $0$ connections, it is marked as idle/unused and passed to the next stage.
+
+![CloudWatch Log](./images/metric-log.png)
 
 3. **Status Check (Lambda)**
 
@@ -51,6 +55,9 @@ The governance routine is executed by the Step Function across sequential stages
 - **Lock Acquired:** The resource is new or is re-violating; the process proceeds.
 - **Lock Failed:** The resource is currently being processed; the current execution skips it.
 **Cleanup:** The separate **DynamoDB Lock Table** uses **TTL** to automatically delete the lock once the execution is complete.
+
+![CloudWatch Log](./images/status-log-lock-acquired.png)
+![CloudWatch Log](./images/status-log-lock-failed.png)
 
 4. **Decision Gate (Choice State)**
 
@@ -62,7 +69,11 @@ The governance routine is executed by the Step Function across sequential stages
 **Function:** Integrates with **Slack** to send a violation notification to the resource owner or team and logs the violation to the Audit Table.
 **Interactive Control:** The notification includes an interactive button that calls an **API Gateway** endpoint to trigger a temporary exemption.
 
+![CloudWatch Log](./images/notify-log.png)
+
 **Snooze Mechanism (Independent Lambda):** If the button is clicked, a separate Lambda (outside the State Machine) is triggered via API Gateway. It stores the resource ID and exemption details in a **DynamoDB Snooze Table** with a configurable **TTL** (e.g., 30 days).
+
+![CloudWatch Log](./images/snooze-log.png)
 
 6. **Wait Grace Period (State Machine)**
 
@@ -71,6 +82,8 @@ The governance routine is executed by the Step Function across sequential stages
 7. **Recheck (Lambda)**
 
 **Function:** Re-evaluates the reported resources after the wait period. It checks if the owner has manually corrected the violation and checks the Snooze table to confirm if any resource is exempted.
+
+![CloudWatch Log](./images/recheck-log.png)
 
 8. **Decision Gate (Choice State)**
 
@@ -82,17 +95,19 @@ The governance routine is executed by the Step Function across sequential stages
 **Function:** If resources remain non-compliant, this function performs **auto-remediation** (e.g., deleting RDS, stopping EC2, releasing EIPs, or tagging IAM and blocking S3 public access).
 **Final Notification:** A final **non-interactive** remediation notification is sent via a separate **Amazon Q(Chatbot)** configuration to the Slack Channel, confirming cleanup and logging actions to the Audit Table.
 
+![CloudWatch Log](./images/remediation-log.png)
+
 ---
 
-## STATE MACHINE STAGES DIAGRAM
+## STATE MACHINE STAGES DIAGRAM(GRAPH)
 
 Visualizing the flow is essential for understanding the logic:
 
-![State Machine Workflow: Full Execution Path (Violation Found)](image.png)
+![State Machine Workflow: Full Execution Path (Violation Found)](./images/step1.png)
 
-![State Machine Workflow: Successful Early Exit (No Action Required)](image.png)
+![State Machine Workflow: Successful Early Exit (No Action Required)](./images/step2.png)
 
-![State Machine Workflow: Exit After Recheck (Violation Resolved/Snoozed)](image.png)
+![State Machine Workflow: Exit After Recheck (Violation Resolved/Snoozed)](./images/step3.png)
 
 ---
 
@@ -116,7 +131,7 @@ This project started off very easy and straight forward untill the single lambda
 
 This wasn't just a random project, it was a lesson in patience, structure, persistance, logical reasoning and most importantly thinking outside the box. This project is a proof of endurance and success behind every logical error that has no documentation fix.
 
-[Watch the Full Application Functionality Demo Here](./linktodemovideohere)
+[Watch the Full Application Functionality Here](https://drive.google.com/file/d/1w-l4KeBtKS9baTDzZn7gMcM9BInkK9aa/view?usp=drivesdk)
 
 ---
 
@@ -207,6 +222,10 @@ You'll only need to do these once anyways except maybe you deleted something. On
 
 ---
 
+[Full CI/CD Execution Demo](https://drive.google.com/file/d/1RTvDT6nSoHAK-WtwsGosN7bbu_Sn3RJE/view?usp=drivesdk)
+
+---
+
 ## UNDERSTANDING THE CLOUDFORMATION TEMPLATE
 
 I have written a cloudformation template to deploy the entire non manual steps of this project. Take a brief look into the resources configured and created in `governance.yaml`.
@@ -245,3 +264,5 @@ So far this project only targets 5 resources in every region avialable:
 4. **IAM** The IAM is one of the targetted resource in this project, but not for cost utilization but for security and best practice. This system looks out for every single IAM User in an AWS Account and checks if these users has MFA configured and if not it quickly tags the users as non complaint and the remediation is tagging these users with MFA REQUIRED.
 
 5. **S3** The S3 is also another targetted resource for security and best practice. The system querries every S3 in every region to ensure too much permission isn't given like public access either by policy or unchecked public boxes and also ALC configuration and if found as non complaint, this system toggles on the block all public access option.
+
+---
