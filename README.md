@@ -26,7 +26,7 @@ This system is built on a robust, event-driven serverless stack, primarily orche
 
 **Scale:** The system is composed of **seven distinct Lambda functions** executing the primary governance stages.
 
-![Architecture Diagram](./images/architecture-diagram.jpeg)
+![Architecture Diagram](./images/Architecture-Diagram.jpeg)
 
 ---
 
