@@ -2,7 +2,7 @@
 
 ## INTRODUCTION:
 
-This is a fully **Serverless Governance System** designed to reduce AWS operational costs and enforces compliance by automatically managing unused or insecure resources across multiple regions. It acts as an **always-on cloud janitor**, proactively discovering, notifying owners about, and remediating violating or forgotten resources that could incur unnecessary costs or pose security risks.
+This is a fully **Serverless Governance System** designed to reduce AWS operational costs and enforce compliance by automatically managing unused or insecure resources across multiple regions. It acts as an **always-on cloud janitor**, proactively discovering, notifying owners about, and remediating violating or forgotten resources that could incur unnecessary costs or pose security risks.
 
 ## Core Value Proposition:
 
@@ -121,7 +121,7 @@ A few challenges faced during the implemenatation of this project ranged from a 
 
 3. While the last solution solved the immediate problem it hence created a new and even bigger one. **"What happens when a resource re-violates?."** Because my previous solution only checks for resource id, this would mean it would totally ignore an old resource re-violation simply because it's resource id already exists in the Audit Table. I tried solving this problem by using the resource's last stage actions (e.g., Remediated, Waiting etc.). While this worked, it wasn't robust enough as the system kept running the same resources concurrently or sometimes even not completing the entire cycle. I decided to introduce a new table here to solve this problem, the **Governance Lock Table** and instead of just checking for resource id or checking last stage actions, the Check Status now attempts to **lock** every single resource it gets to this table which is configured with a **TTL** in order to delete the resources after the execution is complete. This now required the check status function to skip a resource if it fails to acquire a lock for it and proceed with it, if it does acquire a lock.
 
-4. This challenge while not a heavy disruption taught me that **Amazon Q (formerly AWS Chatbot)** requires **JSON payloads matching its schema to interpret structured messages**. But my lambda was publishing a standard raw text message to SNS, and i was hit with an **"Event received is not supported"** error. This was a quick fix as i just needed to rewrite the lambda function to ensure the SNS publication uses the required JSON structure.
+4. This challenge, while not a heavy disruption taught me that **Amazon Q (formerly AWS Chatbot)** requires **JSON payloads matching its schema to interpret structured messages**. But my lambda was publishing a standard raw text message to SNS, and i was hit with an **"Event received is not supported"** error. This was a quick fix as i just needed to rewrite the lambda function to ensure the SNS publication uses the required JSON structure.
 
 ---
 
